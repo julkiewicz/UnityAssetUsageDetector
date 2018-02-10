@@ -15,6 +15,7 @@ using System.Collections.Generic;
 using System.Reflection;
 using System;
 using Object = UnityEngine.Object;
+using System.Linq;
 
 namespace AssetUsageDetectorNamespace
 {
@@ -682,7 +683,7 @@ namespace AssetUsageDetectorNamespace
 	// Here we go..!
 	public class AssetUsageDetector : EditorWindow
 	{
-		private Object assetToSearch;
+		public Object[] assetsToSearch;
 		private List<SubAssetToSearch> subAssetsToSearch = new List<SubAssetToSearch>();
 
 		private HashSet<Object> assetsSet; // A set that contains the searched asset and its sub-assets (if any)
@@ -835,9 +836,13 @@ namespace AssetUsageDetectorNamespace
 		}
 
 		void OnGUI()
-		{
-			// Make the window scrollable
-			scrollPosition = EditorGUILayout.BeginScrollView( scrollPosition, GL_EXPAND_WIDTH, GL_EXPAND_HEIGHT );
+        {
+            ScriptableObject target = this;
+            SerializedObject so = new SerializedObject(target);
+            SerializedProperty assetsToSearchProperty = so.FindProperty("assetsToSearch");
+
+            // Make the window scrollable
+            scrollPosition = EditorGUILayout.BeginScrollView( scrollPosition, GL_EXPAND_WIDTH, GL_EXPAND_HEIGHT );
 
 			GUILayout.BeginVertical();
 
@@ -869,13 +874,14 @@ namespace AssetUsageDetectorNamespace
 			{
 				GUI.changed = false;
 
-				Object prevAssetToSearch = assetToSearch;
-				assetToSearch = EditorGUILayout.ObjectField( "Asset: ", assetToSearch, typeof( Object ), true );
+                EditorGUILayout.PropertyField(assetsToSearchProperty, new GUIContent("Asset: "), true);
 
-				if( GUI.changed && prevAssetToSearch != assetToSearch )
-					OnSearchedAssetChanged();
+                so.ApplyModifiedProperties();
 
-				if( assetToSearch != null && subAssetsToSearch.Count > 0 )
+                if (GUI.changed)
+                    OnSearchedAssetChanged();
+
+				if( assetsToSearch.Length > 0 && subAssetsToSearch.Count > 0 )
 				{
 					GUILayout.BeginHorizontal();
 
@@ -884,7 +890,7 @@ namespace AssetUsageDetectorNamespace
 					bool mixedToggle = false;
 					for( int i = 1; i < subAssetsToSearch.Count; i++ )
 					{
-						if( subAssetsToSearch[i].shouldSearch != toggleAllSubAssets )
+						if (subAssetsToSearch[i].shouldSearch != toggleAllSubAssets )
 						{
 							mixedToggle = true;
 							break;
@@ -899,7 +905,7 @@ namespace AssetUsageDetectorNamespace
 					if( GUI.changed )
 					{
 						for( int i = 0; i < subAssetsToSearch.Count; i++ )
-							subAssetsToSearch[i].shouldSearch = toggleAllSubAssets;
+                            subAssetsToSearch[i].shouldSearch = toggleAllSubAssets;
 					}
 
 					EditorGUI.showMixedValue = false;
@@ -914,7 +920,7 @@ namespace AssetUsageDetectorNamespace
 						{
 							GUILayout.BeginHorizontal();
 
-							subAssetsToSearch[i].shouldSearch = EditorGUILayout.Toggle( subAssetsToSearch[i].shouldSearch, GL_WIDTH_25 );
+                            subAssetsToSearch[i].shouldSearch = EditorGUILayout.Toggle(subAssetsToSearch[i].shouldSearch, GL_WIDTH_25 );
 
 							GUI.enabled = false;
 							EditorGUILayout.ObjectField( string.Empty, subAssetsToSearch[i].subAsset, typeof( Object ), true );
@@ -931,7 +937,7 @@ namespace AssetUsageDetectorNamespace
 
 				searchInAssetsFolder = EditorGUILayout.ToggleLeft( "Project view (Assets folder)", searchInAssetsFolder );
 
-				GUILayout.Space( 10 );
+                GUILayout.Space( 10 );
 
 				if( EditorApplication.isPlaying )
 				{
@@ -1022,7 +1028,7 @@ namespace AssetUsageDetectorNamespace
 
 				if( GUILayout.Button( "GO!", GL_HEIGHT_30 ) )
 				{
-					if( assetToSearch == null )
+					if( assetsToSearch.Length == 0 )
 					{
 						errorMessage = "SELECT AN ASSET FIRST!";
 					}
@@ -1050,10 +1056,12 @@ namespace AssetUsageDetectorNamespace
 			{
 				// Draw the results of the search
 				GUI.enabled = false;
+                
+                EditorGUILayout.PropertyField(assetsToSearchProperty, new GUIContent("Asset: "), true);
 
-				EditorGUILayout.ObjectField( "Asset: ", assetToSearch, typeof( Object ), true );
+                so.ApplyModifiedProperties();
 
-				GUILayout.Space( 10 );
+                GUILayout.Space( 10 );
 				GUI.enabled = true;
 
 				restoreInitialSceneSetup = EditorGUILayout.ToggleLeft( "Restore initial scene setup after search is reset (Recommended)", restoreInitialSceneSetup );
@@ -1175,55 +1183,58 @@ namespace AssetUsageDetectorNamespace
 		// Called when the value of assetToSearch has changed in editor window
 		private void OnSearchedAssetChanged()
 		{
-			if( assetToSearch == null || assetToSearch.Equals( null ) )
+			if( assetsToSearch.Length == 0 || System.Array.IndexOf(assetsToSearch, null) != -1 )
 				return;
 
-			subAssetsToSearch.Clear();
+            subAssetsToSearch.Clear();
+            
+            foreach (var assetToSearch in assetsToSearch)
+            {
+                if (!assetToSearch.IsAsset() || !AssetDatabase.IsMainAsset(assetToSearch) || assetToSearch is SceneAsset)
+                    return;
 
-			if( !assetToSearch.IsAsset() || !AssetDatabase.IsMainAsset( assetToSearch ) || assetToSearch is SceneAsset )
-				return;
+                // Find sub-assets of the searched asset (if any)
+                MonoScript[] monoScriptsInProject = null;
+                Object[] assets = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(assetToSearch));
+                for (int i = 0; i < assets.Length; i++)
+                {
+                    Object asset = assets[i];
+                    if (asset == null || asset.Equals(null) || asset is Component)
+                        continue;
 
-			// Find sub-assets of the searched asset (if any)
-			MonoScript[] monoScriptsInProject = null;
-			Object[] assets = AssetDatabase.LoadAllAssetsAtPath( AssetDatabase.GetAssetPath( assetToSearch ) );
-			for( int i = 0; i < assets.Length; i++ )
-			{
-				Object asset = assets[i];
-				if( asset == null || asset.Equals( null ) || asset is Component )
-					continue;
+                    if (asset != assetToSearch)
+                        subAssetsToSearch.Add(new SubAssetToSearch(asset, true));
 
-				if( asset != assetToSearch )
-					subAssetsToSearch.Add( new SubAssetToSearch( asset, true ) );
+                    // MonoScripts are a special case such that other MonoScript objects
+                    // that extend this MonoScript are also considered a sub-asset
+                    if (asset is MonoScript)
+                    {
+                        Type monoScriptType = ((MonoScript)asset).GetClass();
+                        if (monoScriptType == null || (!monoScriptType.IsInterface && !typeof(Component).IsAssignableFrom(monoScriptType)))
+                            continue;
 
-				// MonoScripts are a special case such that other MonoScript objects
-				// that extend this MonoScript are also considered a sub-asset
-				if( asset is MonoScript )
-				{
-					Type monoScriptType = ( (MonoScript) asset ).GetClass();
-					if( monoScriptType == null || ( !monoScriptType.IsInterface && !typeof( Component ).IsAssignableFrom( monoScriptType ) ) )
-						continue;
+                        // Find all MonoScript objects in the project
+                        if (monoScriptsInProject == null)
+                        {
+                            string[] pathsToMonoScripts = AssetDatabase.FindAssets("t:MonoScript");
+                            monoScriptsInProject = new MonoScript[pathsToMonoScripts.Length];
+                            for (int j = 0; j < pathsToMonoScripts.Length; j++)
+                                monoScriptsInProject[j] = AssetDatabase.LoadAssetAtPath<MonoScript>(AssetDatabase.GUIDToAssetPath(pathsToMonoScripts[j]));
+                        }
 
-					// Find all MonoScript objects in the project
-					if( monoScriptsInProject == null )
-					{
-						string[] pathsToMonoScripts = AssetDatabase.FindAssets( "t:MonoScript" );
-						monoScriptsInProject = new MonoScript[pathsToMonoScripts.Length];
-						for( int j = 0; j < pathsToMonoScripts.Length; j++ )
-							monoScriptsInProject[j] = AssetDatabase.LoadAssetAtPath<MonoScript>( AssetDatabase.GUIDToAssetPath( pathsToMonoScripts[j] ) );
-					}
+                        // Add any MonoScript objects that extend this MonoScript as a sub-asset
+                        for (int j = 0; j < monoScriptsInProject.Length; j++)
+                        {
+                            Type otherMonoScriptType = monoScriptsInProject[j].GetClass();
+                            if (otherMonoScriptType == null || monoScriptType == otherMonoScriptType || !monoScriptType.IsAssignableFrom(otherMonoScriptType))
+                                continue;
 
-					// Add any MonoScript objects that extend this MonoScript as a sub-asset
-					for( int j = 0; j < monoScriptsInProject.Length; j++ )
-					{
-						Type otherMonoScriptType = monoScriptsInProject[j].GetClass();
-						if( otherMonoScriptType == null || monoScriptType == otherMonoScriptType || !monoScriptType.IsAssignableFrom( otherMonoScriptType ) )
-							continue;
-
-						subAssetsToSearch.Add( new SubAssetToSearch( monoScriptsInProject[j], false ) );
-					}
-				}
-			}
-		}
+                            subAssetsToSearch.Add(new SubAssetToSearch(monoScriptsInProject[j], false));
+                        }
+                    }
+                }
+            }
+        }
 
 		// Search for references!
 		private void ExecuteQuery()
@@ -1279,51 +1290,48 @@ namespace AssetUsageDetectorNamespace
 			searchMaterialsForTexture = false;
 
 			// Store the searched asset and its sub-assets (if any) in a set
-			isSearchingAsset = assetToSearch.IsAsset();
+			isSearchingAsset = assetsToSearch.Any(a => a.IsAsset());
 
-			try
+            var allSubAssetsToSearch = new List<SubAssetToSearch>();
+            allSubAssetsToSearch.AddRange(subAssetsToSearch);
+            foreach (var assetToSearch in assetsToSearch)
+            {
+                allSubAssetsToSearch.Add(new SubAssetToSearch(assetToSearch, true));
+            }
+            
+            for ( int i = 0; i < allSubAssetsToSearch.Count; i++ )
 			{
-				// Temporarily add main searched asset to sub-assets list to avoid duplicate code
-				subAssetsToSearch.Add( new SubAssetToSearch( assetToSearch, true ) );
-
-				for( int i = 0; i < subAssetsToSearch.Count; i++ )
+				if ( allSubAssetsToSearch[i].shouldSearch )
 				{
-					if( subAssetsToSearch[i].shouldSearch )
+					Object asset = allSubAssetsToSearch[i].subAsset;
+					if( asset == null || asset.Equals( null ) )
+						continue;
+
+					assetsSet.Add( asset );
+					allAssetClasses.Add( asset.GetType() );
+
+					if( asset is MonoScript )
 					{
-						Object asset = subAssetsToSearch[i].subAsset;
-						if( asset == null || asset.Equals( null ) )
-							continue;
-
-						assetsSet.Add( asset );
-						allAssetClasses.Add( asset.GetType() );
-
-						if( asset is MonoScript )
+						Type monoScriptType = ( (MonoScript) asset ).GetClass();
+						if( monoScriptType != null && typeof( Component ).IsAssignableFrom( monoScriptType ) )
+							allAssetClasses.Add( monoScriptType );
+					}
+					else if( asset is GameObject )
+					{
+						// If searched asset is a GameObject, include its components in the search
+						Component[] components = ( (GameObject) asset ).GetComponents<Component>();
+						for( int j = 0; j < components.Length; j++ )
 						{
-							Type monoScriptType = ( (MonoScript) asset ).GetClass();
-							if( monoScriptType != null && typeof( Component ).IsAssignableFrom( monoScriptType ) )
-								allAssetClasses.Add( monoScriptType );
-						}
-						else if( asset is GameObject )
-						{
-							// If searched asset is a GameObject, include its components in the search
-							Component[] components = ( (GameObject) asset ).GetComponents<Component>();
-							for( int j = 0; j < components.Length; j++ )
-							{
-								if( components[j] == null || components[j].Equals( null ) )
-									continue;
+							if( components[j] == null || components[j].Equals( null ) )
+								continue;
 
-								assetsSet.Add( components[j] );
-								allAssetClasses.Add( components[j].GetType() );
-							}
+							assetsSet.Add( components[j] );
+							allAssetClasses.Add( components[j].GetType() );
 						}
 					}
 				}
 			}
-			finally
-			{
-				subAssetsToSearch.RemoveAt( subAssetsToSearch.Count - 1 );
-			}
-
+		
 			assetClasses = new Type[allAssetClasses.Count];
 			allAssetClasses.CopyTo( assetClasses );
 
